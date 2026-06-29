@@ -1,0 +1,77 @@
+server:
+  port: ${SERVER_PORT:8085}
+
+ai:
+  models:
+    configs:
+      glm-4:
+        api-key: ${AI_GLM4_API_KEY:}
+        base-url: ${AI_GLM4_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+        model-name: ${AI_GLM4_MODEL_NAME:glm-4}
+  vector:
+    host: ${AI_VECTOR_HOST:127.0.0.1}
+    port: ${AI_VECTOR_PORT:19530}
+    collectionName: ${AI_VECTOR_COLLECTION:iyque_vectors}
+    dimension: ${AI_VECTOR_DIMENSION:1536}
+    score: ${AI_VECTOR_SCORE:0.5f}
+    configs:
+      embedding-3:
+        api-key: ${AI_EMBEDDING3_API_KEY:}
+        base-url: ${AI_EMBEDDING3_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+        model-name: ${AI_EMBEDDING3_MODEL_NAME:embedding-3}
+
+iyque:
+  userName: ${IYQUE_ADMIN_USERNAME:iyque}
+  pwd: ${IYQUE_ADMIN_PASSWORD:iyque.cn}
+  demo: ${IYQUE_DEMO:false}
+  fileViewUrl: ${IYQUE_FILE_VIEW_URL:http://localhost:8080/api/file/fileView/}
+  uploadDir: ${IYQUE_UPLOAD_DIR:/app/uploads}
+  inquiryAll: ${IYQUE_INQUIRY_ALL:true}
+  complaintUrl: ${IYQUE_COMPLAINT_URL:http://localhost:8080/openmobile/customerComplaint}
+  customerSeasUrl: ${IYQUE_CUSTOMER_SEAS_URL:http://localhost:8080/openmobile/customerSeas}
+  h5MarketUrl: ${IYQUE_H5_MARKET_URL:http://localhost:8080/openmobile/H5Marketing?id={0}}
+  phaseOneAlertRobotId: ${IYQUE_PHASE_ONE_ALERT_ROBOT_ID:}
+  phaseOneAlertEmailReceivers: ${IYQUE_PHASE_ONE_ALERT_EMAIL_RECEIVERS:}
+  phaseOneAlertEmailFrom: ${IYQUE_PHASE_ONE_ALERT_EMAIL_FROM:}
+  vector:
+    host: ${IYQUE_VECTOR_HOST:127.0.0.1}
+    port: ${IYQUE_VECTOR_PORT:19530}
+    collectionName: ${IYQUE_VECTOR_COLLECTION:iyque_vectors}
+    dimension: ${IYQUE_VECTOR_DIMENSION:1536}
+    vectorModel: ${IYQUE_VECTOR_MODEL:embedding-3}
+    score: ${IYQUE_VECTOR_SCORE:0.5f}
+
+wecom:
+  corp-id: ${WECOM_CORP_ID:}
+  agent-id: ${WECOM_AGENT_ID:}
+  agent-secret: ${WECOM_AGENT_SECRET:}
+  token: ${WECOM_TOKEN:}
+  encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
+  msg-audit-lib-path: ${WECOM_MSG_AUDIT_LIB_PATH:}
+  msg-audit-private-key: ${WECOM_MSG_AUDIT_PRIVATE_KEY:}
+  msg-audit-secret: ${WECOM_MSG_AUDIT_SECRET:}
+
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://iyque-mysql:3306/scrm_ky?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+  jpa:
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
+  redis:
+    host: ${SPRING_REDIS_HOST:iyque-redis}
+    port: ${SPRING_REDIS_PORT:6379}
+    password: ${SPRING_REDIS_PASSWORD:}
+    database: ${SPRING_REDIS_DATABASE:1}
+  mail:
+    host: ${SPRING_MAIL_HOST:}
+    port: ${SPRING_MAIL_PORT:25}
+    username: ${SPRING_MAIL_USERNAME:}
+    password: ${SPRING_MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SPRING_MAIL_SMTP_AUTH:false}
+          starttls:
+            enable: ${SPRING_MAIL_SMTP_STARTTLS:false}

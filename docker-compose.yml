@@ -1,0 +1,108 @@
+name: iyque
+
+services:
+  iyque-mysql:
+    image: mysql:8.0
+    container_name: iyque-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-scrm_ky}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./deploy/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - iyque-net
+
+  iyque-redis:
+    image: redis:7-alpine
+    container_name: iyque-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    command: >
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ];
+      then redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+      else redis-server --appendonly yes;
+      fi'
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then redis-cli -a \"$${REDIS_PASSWORD}\" ping; else redis-cli ping; fi"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - iyque-net
+
+  iyque-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iyque-backend:local
+    container_name: iyque-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8085
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://iyque-mysql:3306/${MYSQL_DATABASE:-scrm_ky}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD}
+      SPRING_REDIS_HOST: iyque-redis
+      SPRING_REDIS_PORT: 6379
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SPRING_REDIS_DATABASE: ${SPRING_REDIS_DATABASE:-1}
+      IYQUE_UPLOAD_DIR: /app/uploads
+      IYQUE_FILE_VIEW_URL: ${IYQUE_FILE_VIEW_URL:-http://localhost:8080/api/file/fileView/}
+      TZ: ${TZ:-Asia/Shanghai}
+    depends_on:
+      iyque-mysql:
+        condition: service_healthy
+      iyque-redis:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_HOST_PORT:-8085}:8085"
+    volumes:
+      - backend_uploads:/app/uploads
+    networks:
+      - iyque-net
+
+  iyque-web:
+    build:
+      context: .
+      dockerfile: frontEnd/pc/Dockerfile
+    image: iyque-web:local
+    container_name: iyque-web
+    restart: unless-stopped
+    depends_on:
+      - iyque-backend
+    ports:
+      - "${WEB_HTTP_PORT:-8080}:80"
+    networks:
+      - iyque-net
+
+networks:
+  iyque-net:
+    name: iyque-net
+
+volumes:
+  mysql_data:
+  redis_data:
+  backend_uploads:

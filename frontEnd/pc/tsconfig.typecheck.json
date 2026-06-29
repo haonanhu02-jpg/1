@@ -1,0 +1,26 @@
+{
+  "extends": "@vue/tsconfig/tsconfig.dom.json",
+  "include": [
+    "env.d.ts",
+    "auto-imports.d.ts",
+    "sys.config.ts",
+    "src/views/phaseOne/**/*",
+    "src/views/contentCenter/combinedRhetoric/aev.vue"
+  ],
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "vueCompilerOptions": {
+    "strictTemplates": false,
+    "skipTemplateCodegen": true
+  }
+}

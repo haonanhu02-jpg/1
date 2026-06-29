@@ -1,0 +1,9 @@
+target
+.git
+.idea
+.vscode
+.env
+frontEnd/pc/node_modules
+frontEnd/pc/dist
+deploy/mysql/init/*.sql
+*.log

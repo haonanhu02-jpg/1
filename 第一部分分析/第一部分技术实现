@@ -1,0 +1,878 @@
+# 企业微信自动加好友与自动入群 SCRM 系统——第一部分技术实现方案
+
+## 1. 文档说明
+
+本文档用于指导 Codex 基于《企业微信需求（第一部分）.md》实现一期系统。
+
+根据对 `D:\Project\Iyque-SCRM-master.zip` 的分析，Iyque-SCRM 与一期需求属于“部分高度匹配”：
+
+```text
+1. 可以作为企业微信 SCRM 参考项目或 Java 二开底座。
+2. 员工活码、扫码加好友、state 渠道识别、欢迎语、自动打标、客户同步、素材、标签、客群同步等基础能力可以复用或少量改造。
+3. 群池、分群规则、客户进退群关系、回调幂等、API 日志、告警、失败重试、access_token 缓存治理必须补齐。
+```
+
+因此，一期默认技术路线从“从零开发 MVP”调整为：
+
+```text
+基于 Iyque-SCRM 的 Spring Boot 二开 MVP。
+```
+
+本文档遵守以下边界：
+
+```text
+不开发微信 App
+不开发企业微信客户端
+不使用非官方协议
+不做 PC Hook
+不做模拟点击
+不绕过企业微信官方限制
+不实现强制客户进群
+不实现群内 AI 智能体自动回复
+不实现模拟员工自动私聊
+```
+
+开发前请先阅读：
+
+```text
+docs/第一部分需求/企业微信需求（第一部分）.md
+docs/第一部分需求/第一部分技术实现
+D:\Project\Iyque-SCRM-master.zip
+```
+
+Codex 执行原则：
+
+```text
+1. 不要重写 Iyque-SCRM。
+2. 先复用已有能力，再最小侵入新增一期闭环模块。
+3. 非一期能力，例如 AI 客服、会话存档、投诉、客户公海、风控、H5 营销，默认不扩展。
+4. 所有企业微信能力必须走官方 API / 官方回调 / wxJava SDK。
+5. 每个 MVP 阶段必须能单独验收。
+```
+
+---
+
+## 2. 推荐技术路线
+
+### 2.1 MVP 默认路线
+
+一期 MVP 默认使用：
+
+```text
+二开底座：Iyque-SCRM
+后端框架：Spring Boot 2.7.x
+语言版本：Java 17
+企业微信 SDK：wxJava / weixin-java-cp
+数据库：MySQL
+ORM：JPA + MyBatis-Plus
+缓存：Redis
+定时任务：Spring Scheduler
+轻量异步：Spring @Async / 失败任务表
+前端后台：Vue 3 + Vite + Pinia + Element Plus
+移动端：Vue 3 + Vite + Vant，可按需保留
+日志：Logback + 数据库业务日志
+部署：Docker / Docker Compose / Nginx
+```
+
+推荐原因：
+
+```text
+1. Iyque-SCRM 已经接入企业微信官方能力，能节省员工活码、欢迎语、客户、标签、素材和客群同步开发成本。
+2. Spring Boot 方案与 Iyque-SCRM 现有代码完全匹配。
+3. Vue 3 + Element Plus 与现有 PC 后台一致，适合继续补页面。
+4. MySQL 已有初始化脚本，可以继续承载一期关系型数据。
+5. Redis 必须补足 access_token 缓存、回调幂等短锁和任务锁能力。
+6. Spring Scheduler 足够支撑一期轻量重试、群容量同步、告警重发和统计汇总。
+```
+
+### 2.2 保留的自研备选路线
+
+如果后续决定不基于 Iyque-SCRM 二开，可以保留从零开发路线：
+
+```text
+FastAPI + SQLAlchemy + MySQL + Redis + APScheduler + Vue 3 + Element Plus
+```
+
+适用场景：
+
+```text
+1. 团队更熟悉 Python。
+2. 不希望继承 Iyque-SCRM 中大量非一期模块。
+3. 希望完全按当前需求重新建模。
+```
+
+但当前阶段不推荐优先采用该路线，因为已有 Iyque-SCRM 可复用基础能力。
+
+---
+
+## 3. Iyque-SCRM 二开边界
+
+| 能力模块 | Iyque-SCRM 是否已有 | 是否可直接复用 | 是否需要改造 | 说明 |
+| --- | --- | --- | --- | --- |
+| 员工活码 | 有 | 可复用 | 需要小改 | `iyque_user_code` 已有员工、标签、欢迎语、state、configId、二维码；需补渠道、员工池、默认群池绑定 |
+| 扫码加好友 | 有 | 可复用 | 需要改造 | 回调已处理新增外部联系人；需补幂等、事件日志、失败重试 |
+| state 渠道识别 | 有 | 可复用 | 需要改造 | 已用 state 区分活码和短链；需沉淀为渠道表和分群规则入口 |
+| 自动欢迎语 | 有 | 可复用 | 需要改造 | 已能发欢迎语；需在分群后拼入对应入群入口 |
+| 自动打标 | 有 | 可复用 | 需要改造 | 已调用企微打标签；需补失败日志、重试、标签来源记录 |
+| 客户同步 | 有 | 可复用 | 需要改造 | 已有客户同步和客户入库；需补渠道归因、员工承接统计、关系一致性 |
+| 素材库 | 有 | 可复用 | 少量改造 | 已有素材中心；需保证欢迎语、入群二维码、文件资料统一引用 |
+| 标签管理 | 有 | 可复用 | 需要改造 | 已有客户标签和客群标签；需服务于分群规则和统计筛选 |
+| 客群同步 | 有 | 可复用 | 需要改造 | 已能同步企业微信客户群；需补群池归属、容量阈值、备用群状态 |
+| 后台页面 | 有 | 部分复用 | 需要新增页面 | 复用员工活码、客户、标签、素材、客群；新增群池、规则、告警、API 日志、重试 |
+| 权限管理 | 有基础登录 | MVP 可临时复用 | 后续改造 | 当前可先保留管理员登录；复杂 RBAC 后续扩展 |
+
+---
+
+## 4. 必须补齐的缺失模块
+
+| 缺失模块 | 为什么必须补齐 | 建议新增表 | 建议新增接口 | 建议新增服务类 | 优先级 |
+| --- | --- | --- | --- | --- | --- |
+| 独立群池模型 | 一期核心是按群池承接客户，而不是只生成单个群码 | `group_pool`, `group_pool_chat` | `/api/group-pools` | `GroupPoolService` | 高 |
+| 分群规则优先级 | 需要实现客户标签规则 > 渠道标签规则 > 渠道默认群池 > 全局默认群池 | `routing_rule` | `/api/routing-rules` | `RoutingRuleService` | 高 |
+| 客户进群 / 退群关系 | 进群转化率、退群统计、群池容量都依赖该关系 | `customer_group_rel` | `/api/customer-group-rel` | `CustomerGroupRelService` | 高 |
+| 回调幂等表 | 企业微信可能重复推送事件，必须避免重复发欢迎语、重复打标 | `wecom_event_idempotent` | 回调内部使用 | `WecomEventIdempotentService` | 高 |
+| API 调用日志 | 需要排查企微接口失败、统计失败率并触发告警 | `wecom_api_call_log` | `/api/logs/wecom-api` | `WecomApiLogService` | 高 |
+| 告警日志 | 群满、无备用群、API 失败、token 失败都需要可见和可处理 | `alert_log` | `/api/alerts` | `AlertService` | 高 |
+| 失败任务重试 | 欢迎语、打标、同步、告警发送失败后需要可重试 | `retry_task` | `/api/retry-tasks` | `RetryTaskService` | 中高 |
+| access_token Redis 缓存策略 | 避免每次调用企微都取 token，降低接口失败和限流风险 | Redis key，可选 `wecom_token_cache` | `/api/wecom/token/test`, `/api/wecom/token/refresh` | `WecomTokenService` | 高 |
+
+---
+
+## 5. 新系统模块划分
+
+建议在不破坏 Iyque-SCRM 原有结构的前提下新增一期扩展包。
+
+建议目录：
+
+```text
+src/main/java/cn/iyque/scrm/
+  wecom/
+    config/
+    client/
+    callback/
+    token/
+    idempotent/
+  channel/
+  contact/
+  groupchat/
+  grouppool/
+  routing/
+  tag/
+  material/
+  statistics/
+  log/
+  alert/
+  retry/
+```
+
+模块职责：
+
+| 模块 | 职责 |
+| --- | --- |
+| `wecom/config` | 企业微信配置读取、配置校验、敏感配置管理 |
+| `wecom/client` | 统一封装企业微信 API 调用、错误处理、API 调用日志、告警触发 |
+| `wecom/callback` | GET 验证、POST 回调解密、事件解析、事件分发 |
+| `wecom/token` | access_token Redis 缓存、预刷新、手动刷新、配置测试 |
+| `wecom/idempotent` | 回调事件幂等键生成、幂等落库、重复事件拦截 |
+| `channel` | 渠道、渠道标签、渠道默认群池、渠道活码扩展 |
+| `contact` | 客户、客户员工关系、客户状态、渠道归因 |
+| `groupchat` | 客户群同步、客户群详情同步、群人数同步 |
+| `grouppool` | 群池、群池客户群关系、群满阈值、备用群切换 |
+| `routing` | 分群规则、优先级匹配、兜底策略 |
+| `tag` | 标签同步、标签匹配、自动打标扩展 |
+| `material` | 素材复用、欢迎语附件、入群入口素材 |
+| `statistics` | 新增好友、进群、退群、转化率、员工承接量、群池容量统计 |
+| `log` | 事件日志、API 调用日志、操作日志扩展 |
+| `alert` | 告警生成、告警处理、企业微信群机器人通知、邮件通知 |
+| `retry` | 失败任务记录、定时重试、手动重试 |
+
+---
+
+## 6. 企业微信对接关键点
+
+### 6.1 保留现有回调入口
+
+Iyque-SCRM 已有：
+
+```text
+GET  /iycallback/handle
+POST /iycallback/handle
+```
+
+一期继续保留该路径，避免重新配置企业微信后台回调地址。
+
+GET 用于 URL 验证：
+
+```text
+1. 读取 token、encodingAESKey、corpId。
+2. 校验 msg_signature、timestamp、nonce、echostr。
+3. 返回解密后的 echostr。
+```
+
+POST 用于事件接收：
+
+```text
+1. 校验签名。
+2. 解密 XML。
+3. 解析事件类型。
+4. 生成幂等键。
+5. 写入 wecom_event_idempotent。
+6. 分发到客户事件、客户群事件、会话事件或其他事件处理器。
+7. 所有企业微信 API 调用必须经过统一 client 记录日志。
+8. 失败时写入 retry_task 和 alert_log。
+```
+
+### 6.2 必须新增的回调事件处理
+
+一期至少处理：
+
+| 事件 | 作用 | 一期处理 |
+| --- | --- | --- |
+| 新增外部联系人 | 客户扫码添加员工 | 保存客户、识别渠道、自动打标、匹配群池、发送欢迎语和入群入口 |
+| 删除外部联系人 | 客户流失或员工删除客户 | 更新客户关系状态，记录日志 |
+| 客户群变更 | 客户进群、退群、群信息变更 | 记录 `customer_group_rel`，更新群池容量和统计 |
+
+客户群进退事件字段和事件类型需要查企业微信官方文档确认，并以官方文档为准。
+
+### 6.3 access_token 缓存策略
+
+必须使用 Redis 缓存 access_token。
+
+Redis key 建议：
+
+```text
+wecom:access_token:{corp_id}:{secret_type}
+wecom:access_token:lock:{corp_id}:{secret_type}
+```
+
+缓存内容：
+
+```json
+{
+  "access_token": "...",
+  "expires_at": "2026-06-20 12:00:00",
+  "secret_type": "customer_contact",
+  "corp_id": "..."
+}
+```
+
+策略：
+
+```text
+1. token 过期前 5 到 10 分钟提前刷新。
+2. 并发刷新必须加 Redis 锁。
+3. token 获取失败写入 wecom_api_call_log。
+4. token 获取失败触发 alert_log。
+5. 如果 Redis 不可用，MVP 可短期降级为数据库或内存缓存，但必须记录风险。
+```
+
+### 6.4 企业微信 API 调用封装
+
+所有企业微信 API 调用都必须经过统一封装：
+
+```text
+WecomApiClient
+```
+
+职责：
+
+```text
+1. 获取 access_token。
+2. 调用 wxJava 或官方 HTTP API。
+3. 设置超时。
+4. 捕获异常。
+5. 记录 request / response / errcode / errmsg / cost_ms。
+6. 根据错误类型决定是否写入 retry_task。
+7. 根据严重程度决定是否写入 alert_log。
+```
+
+不得在业务代码中散落直接调用企业微信 API 的逻辑。
+
+---
+
+## 7. 数据表设计
+
+以下设计是在保留 Iyque-SCRM 现有表能力的基础上补充一期必需表。
+
+### 7.1 现有表复用
+
+| Iyque-SCRM 现有表 | 复用方向 | 说明 |
+| --- | --- | --- |
+| `iyque_config` | 企业微信配置 | 需补敏感字段保护和 token 测试 |
+| `iyque_user` | 员工列表 | 可作为员工基础表 |
+| `iyque_user_code` | 员工活码 | 需扩展渠道、员工池、默认群池绑定 |
+| `iyque_customer_info` | 客户信息 | 需补渠道归因和进群状态统计 |
+| `iyque_tag` | 标签 | 复用客户标签和客群标签 |
+| `iyque_tag_group` | 标签组 | 复用标签分组 |
+| `iyque_material` | 素材 | 复用欢迎语和入群入口素材 |
+| `iyque_default_msg` | 默认欢迎语 | 复用默认欢迎语 |
+| `iyque_msg_annex` | 欢迎语附件 | 复用欢迎语图片、链接、文件附件 |
+| `iyque_chat` | 客户群 | 复用客户群同步结果 |
+| `iyque_chat_code` | 智能群码 | 可作为入群方式参考，但不能替代群池 |
+| `iyque_operate_log` | 操作日志 | 可保留；API 日志和告警日志需单独新增 |
+| `iyque_synch_data_record` | 同步记录 | 可参考；失败任务需单独新增 |
+
+### 7.2 新增和改造表
+
+| 表名 | 是否新增 | 作用 | 关键字段 | 与 Iyque-SCRM 现有表关系 |
+| --- | --- | --- | --- | --- |
+| `channel` | 新增 | 渠道主表，避免只依赖 state 字符串 | `id`, `name`, `code`, `tag_id`, `default_group_pool_id`, `status`, `created_at`, `updated_at` | 关联 `iyque_user_code.codeState` 和 `iyque_tag.tagId` |
+| `staff_pool` | 新增 | 员工池主表 | `id`, `name`, `strategy`, `status`, `created_at`, `updated_at` | 关联 `iyque_user` |
+| `staff_pool_member` | 新增 | 员工池成员 | `id`, `pool_id`, `user_id`, `weight`, `status`, `sort` | `user_id` 对应 `iyque_user.userId` |
+| `group_pool` | 新增 | 群池主表 | `id`, `name`, `channel_id`, `threshold`, `is_global_default`, `status`, `created_at`, `updated_at` | 关联 `channel` |
+| `group_pool_chat` | 新增 | 群池-客户群关系 | `id`, `pool_id`, `chat_id`, `sort`, `max_member_count`, `current_member_count`, `is_backup`, `status` | `chat_id` 对应 `iyque_chat.chatId` |
+| `routing_rule` | 新增 | 分群规则 | `id`, `name`, `priority`, `match_type`, `channel_id`, `tag_ids`, `target_group_pool_id`, `status` | 使用 `channel`, `iyque_tag`, `group_pool` |
+| `customer_group_rel` | 新增 | 客户进退群关系 | `id`, `external_userid`, `chat_id`, `join_time`, `leave_time`, `status`, `source_channel_id`, `source_state` | 关联 `iyque_customer_info.externalUserid` 和 `iyque_chat.chatId` |
+| `wecom_event_idempotent` | 新增 | 回调事件幂等 | `id`, `event_key`, `event_type`, `source`, `payload_hash`, `status`, `processed_at`, `created_at` | 回调入口先写入和检查 |
+| `wecom_api_call_log` | 新增 | 企业微信 API 调用日志 | `id`, `api_name`, `method`, `url`, `request_body`, `response_body`, `err_code`, `err_msg`, `success`, `cost_ms`, `created_at` | 由 `WecomApiClient` 统一写入 |
+| `alert_log` | 新增 | 告警日志 | `id`, `alert_type`, `level`, `title`, `content`, `biz_type`, `biz_id`, `status`, `handled_by`, `handled_at`, `created_at` | API 失败、群满、无备用群、token 失败等写入 |
+| `retry_task` | 新增 | 失败任务重试 | `id`, `task_type`, `biz_type`, `biz_id`, `payload`, `retry_count`, `max_retry_count`, `next_retry_at`, `status`, `last_error` | 欢迎语、打标、同步、告警失败后写入 |
+| `wecom_token_cache` | 可不建表 | access_token 缓存说明 | 优先 Redis，不强制建表 | 如需降级备份再建表 |
+
+### 7.3 关键表字段说明
+
+#### group_pool
+
+```text
+id
+name
+channel_id
+threshold
+is_global_default
+status
+remark
+created_at
+updated_at
+```
+
+#### group_pool_chat
+
+```text
+id
+pool_id
+chat_id
+chat_name
+sort
+max_member_count
+current_member_count
+is_backup
+status
+last_sync_at
+created_at
+updated_at
+```
+
+#### routing_rule
+
+```text
+id
+name
+priority
+match_type
+channel_id
+tag_ids
+target_group_pool_id
+status
+created_at
+updated_at
+```
+
+match_type 建议值：
+
+```text
+CUSTOMER_TAG
+CHANNEL_TAG
+CHANNEL_DEFAULT
+GLOBAL_DEFAULT
+```
+
+#### customer_group_rel
+
+```text
+id
+external_userid
+customer_name
+chat_id
+chat_name
+join_time
+leave_time
+status
+source_channel_id
+source_state
+created_at
+updated_at
+```
+
+status 建议值：
+
+```text
+IN_GROUP
+LEFT_GROUP
+UNKNOWN
+```
+
+#### wecom_event_idempotent
+
+```text
+id
+event_key
+event_type
+payload_hash
+payload
+status
+processed_at
+error_message
+created_at
+updated_at
+```
+
+event_key 生成建议：
+
+```text
+优先使用企业微信官方唯一事件 ID。
+如果事件中没有唯一 ID，则使用 event_type + create_time + external_userid + userid + chat_id + state 组合生成。
+```
+
+---
+
+## 8. 后端接口设计
+
+### 8.1 企业微信回调接口
+
+| 接口模块 | 接口路径 | 请求方式 | 作用 | 是否一期必须 |
+| --- | --- | --- | --- | --- |
+| 企微回调验证 | `/iycallback/handle` | GET | 企业微信 URL 验证，保留现有入口 | 是 |
+| 企微事件回调 | `/iycallback/handle` | POST | 解密、幂等、分发客户和客户群事件 | 是 |
+
+### 8.2 后台管理接口
+
+| 接口模块 | 接口路径 | 请求方式 | 作用 | 是否一期必须 |
+| --- | --- | --- | --- | --- |
+| 群池管理 | `/api/group-pools` | GET | 查询群池列表 | 是 |
+| 群池管理 | `/api/group-pools` | POST | 新建群池 | 是 |
+| 群池管理 | `/api/group-pools/{id}` | PUT | 编辑群池 | 是 |
+| 群池管理 | `/api/group-pools/{id}` | DELETE | 删除或停用群池 | 是 |
+| 群池客户群 | `/api/group-pools/{id}/chats` | GET | 查询群池内客户群 | 是 |
+| 群池客户群 | `/api/group-pools/{id}/chats` | POST | 绑定客户群到群池 | 是 |
+| 群池客户群 | `/api/group-pools/{id}/chats/{relId}` | DELETE | 移除群池客户群 | 是 |
+| 分群规则 | `/api/routing-rules` | GET | 查询分群规则 | 是 |
+| 分群规则 | `/api/routing-rules` | POST | 新建分群规则 | 是 |
+| 分群规则 | `/api/routing-rules/{id}` | PUT | 编辑分群规则 | 是 |
+| 分群规则 | `/api/routing-rules/{id}` | DELETE | 删除或停用分群规则 | 是 |
+| 客户进退群关系 | `/api/customer-group-rel` | GET | 查询客户进群、退群记录 | 是 |
+| API 调用日志 | `/api/logs/wecom-api` | GET | 查询企业微信 API 调用日志 | 是 |
+| 告警日志 | `/api/alerts` | GET | 查询告警列表 | 是 |
+| 告警处理 | `/api/alerts/{id}/handle` | PUT | 标记告警已处理 | 是 |
+| 失败任务 | `/api/retry-tasks` | GET | 查询失败任务 | 是 |
+| 手动重试 | `/api/retry-tasks/{id}/retry` | POST | 手动重试失败任务 | 是 |
+| token 测试 | `/api/wecom/token/test` | POST | 测试企业微信配置和 token 获取 | 是 |
+| token 刷新 | `/api/wecom/token/refresh` | POST | 手动刷新 access_token | 是 |
+| 统计查询 | `/api/statistics/overview` | GET | 查询新增好友、进群、退群、转化率 | 是 |
+| 统计导出 | `/api/statistics/export` | GET | 导出 CSV / Excel | 是 |
+
+### 8.3 可复用的 Iyque-SCRM 现有接口
+
+| 现有接口 | 作用 | 处理方式 |
+| --- | --- | --- |
+| `/iyQue/save` | 创建员工活码 | 复用，补渠道、员工池、默认群池字段 |
+| `/iyQue/findIYqueUserCode` | 查询员工活码 | 复用，补筛选字段 |
+| `/customerInfo/findAll` | 查询客户列表 | 复用，补渠道和进群状态 |
+| `/customerInfo/synchCustomer` | 同步客户 | 复用 |
+| `/iYqueTag/findIYqueTagGroups` | 查询标签组 | 复用 |
+| `/iYqueTag/synchTags` | 同步标签 | 复用 |
+| `/material/findAll` | 查询素材 | 复用 |
+| `/iYqueChat/synchIyqueChat` | 同步客户群 | 复用，补群容量同步 |
+| `/iYqueChat/findIYqueChatPage` | 查询客户群 | 复用 |
+| `/log/findAll` | 操作日志 | 保留；不能替代 API 调用日志 |
+
+---
+
+## 9. 规则引擎逻辑
+
+### 9.1 客户加好友处理流程
+
+```text
+企业微信 POST 回调
+↓
+验签解密
+↓
+解析新增外部联系人事件
+↓
+生成幂等键
+↓
+重复事件直接返回 success
+↓
+根据 state 识别员工活码 / 渠道
+↓
+保存客户和客户员工关系
+↓
+匹配渠道标签并自动打标
+↓
+执行分群规则
+↓
+选出目标群池和可用客户群
+↓
+生成或获取入群入口
+↓
+发送欢迎语和入群入口
+↓
+记录事件日志、API 日志、统计数据
+```
+
+### 9.2 分群规则优先级
+
+固定优先级：
+
+```text
+客户标签规则 > 渠道标签规则 > 渠道默认群池 > 全局默认群池
+```
+
+规则说明：
+
+```text
+1. 客户已有标签命中 routing_rule.match_type = CUSTOMER_TAG 时，优先使用该规则。
+2. 客户来源渠道绑定标签命中 CHANNEL_TAG 时，使用渠道标签规则。
+3. 未命中标签规则时，使用渠道默认群池。
+4. 渠道没有默认群池时，使用全局默认群池。
+5. 所有规则均未命中时，写入告警，不发送错误群入口。
+```
+
+### 9.3 群池选群规则
+
+```text
+1. 查询目标 group_pool 下 status = ENABLED 的 group_pool_chat。
+2. 按 sort 升序选择。
+3. current_member_count < threshold 时可用。
+4. 当前群达到阈值后切换到下一个备用群。
+5. 所有群不可用时触发 alert_log。
+6. 如果配置允许自动建群，可调用企业微信官方客户群入群方式能力；具体能力边界需要查企业微信官方文档确认。
+```
+
+### 9.4 兜底策略
+
+| 异常场景 | 处理策略 |
+| --- | --- |
+| state 无法识别 | 保存事件日志，使用全局默认欢迎语，不做渠道归因 |
+| 未匹配渠道 | 使用全局默认群池 |
+| 未配置欢迎语 | 使用 Iyque-SCRM 默认欢迎语 |
+| 未配置群池 | 发送不含入群入口的欢迎语，并触发告警 |
+| 群池无可用群 | 不发送失效群入口，触发告警 |
+| 打标签失败 | 记录 API 日志，写入 retry_task |
+| 欢迎语失败 | 记录 API 日志，写入 retry_task 和 alert_log |
+| 回调重复 | 直接返回 success，不重复执行业务动作 |
+
+---
+
+## 10. 日志、告警与重试
+
+### 10.1 日志类型
+
+一期必须记录：
+
+```text
+1. 回调事件日志。
+2. 幂等处理日志。
+3. 企业微信 API 调用日志。
+4. 员工活码创建日志。
+5. 自动打标日志。
+6. 欢迎语发送日志。
+7. 入群入口发送日志。
+8. 客户进群日志。
+9. 客户退群日志。
+10. 分群规则匹配日志。
+11. 群池切换日志。
+12. 告警处理日志。
+```
+
+### 10.2 告警场景
+
+一期必须告警：
+
+```text
+1. 企业微信 API 调用失败。
+2. access_token 获取失败。
+3. 回调验签失败。
+4. 回调解密失败。
+5. 欢迎语发送失败。
+6. 打标签失败。
+7. 群二维码失效。
+8. 群人数达到阈值。
+9. 群池无可用备用群。
+10. 员工不可用。
+11. 客户群同步失败。
+12. 失败任务超过最大重试次数。
+```
+
+### 10.3 告警方式
+
+MVP 支持：
+
+```text
+1. 后台告警列表。
+2. 企业微信内部群机器人。
+3. 邮件。
+```
+
+短信告警作为后续扩展。
+
+### 10.4 失败任务重试
+
+失败任务类型：
+
+```text
+SEND_WELCOME_MSG
+MARK_CUSTOMER_TAG
+SYNC_GROUP_CHAT
+SYNC_CUSTOMER
+SEND_ALERT
+REFRESH_TOKEN
+```
+
+重试策略：
+
+```text
+1. 默认最大重试 3 次。
+2. 每次失败记录 last_error。
+3. 下一次重试时间使用递增间隔，例如 1 分钟、5 分钟、15 分钟。
+4. 超过最大重试次数后标记 FAILED，并触发告警。
+5. 后台支持手动重试。
+```
+
+---
+
+## 11. 统计指标
+
+一期统计指标：
+
+| 指标 | 数据来源 |
+| --- | --- |
+| 新增好友数 | `iyque_customer_info`, `channel` |
+| 成功进群人数 | `customer_group_rel` |
+| 退群人数 | `customer_group_rel` |
+| 进群转化率 | 成功进群人数 / 新增好友数 |
+| 员工承接量 | `iyque_customer_info.userId` |
+| 群池剩余容量 | `group_pool_chat.max_member_count - current_member_count` |
+| 欢迎语发送成功数 | `wecom_api_call_log` |
+| 欢迎语发送失败数 | `wecom_api_call_log`, `retry_task` |
+| 企业微信 API 异常数 | `wecom_api_call_log` |
+| 告警数量 | `alert_log` |
+
+筛选维度：
+
+```text
+时间范围
+渠道
+员工
+群池
+客户群
+告警状态
+```
+
+导出：
+
+```text
+CSV
+Excel
+```
+
+说明：
+
+```text
+精准统计“扫码但未加好友”的人数不作为一期默认能力。
+如需统计扫码访问量，后续增加中转落地页或短链方案。
+```
+
+---
+
+## 12. MVP 开发顺序
+
+### 阶段 1：跑通 Iyque-SCRM 基础环境
+
+目标：
+
+```text
+1. 解压 Iyque-SCRM。
+2. 导入 MySQL 初始化脚本。
+3. 启动 Spring Boot 后端。
+4. 启动 PC 后台。
+5. 配置企业微信参数。
+```
+
+最小验收：
+
+```text
+后台可登录。
+企业微信配置可保存。
+员工、客户、标签、客户群同步接口可调用。
+```
+
+### 阶段 2：企业微信 client、token、API 日志
+
+目标：
+
+```text
+1. 新增 WecomApiClient。
+2. 新增 WecomTokenService。
+3. 新增 wecom_api_call_log。
+4. 所有新增企微调用经过统一 client。
+```
+
+最小验收：
+
+```text
+token 可测试和刷新。
+成功和失败的企微 API 调用都能在后台日志中看到。
+```
+
+### 阶段 3：回调幂等改造
+
+目标：
+
+```text
+1. 保留 /iycallback/handle。
+2. 新增 wecom_event_idempotent。
+3. 新增回调事件分发器。
+4. 新增重复回调拦截。
+```
+
+最小验收：
+
+```text
+同一新增客户回调重复推送时，不重复发欢迎语、不重复打标。
+```
+
+### 阶段 4：员工活码扩展
+
+目标：
+
+```text
+1. 复用 iyque_user_code。
+2. 新增 channel。
+3. 新增 staff_pool / staff_pool_member。
+4. 员工活码绑定渠道、员工池、默认群池。
+```
+
+最小验收：
+
+```text
+运营可创建渠道活码，并绑定渠道、标签、员工池、欢迎语、默认群池。
+```
+
+### 阶段 5：群池与分群规则
+
+目标：
+
+```text
+1. 新增 group_pool。
+2. 新增 group_pool_chat。
+3. 新增 routing_rule。
+4. 实现分群规则优先级。
+```
+
+最小验收：
+
+```text
+系统能根据客户标签、渠道标签、渠道默认群池、全局默认群池选出目标群。
+```
+
+### 阶段 6：客户进群 / 退群记录
+
+目标：
+
+```text
+1. 处理客户群变更回调。
+2. 新增 customer_group_rel。
+3. 更新群池当前人数。
+4. 客户进群后自动打“已进群”标签。
+```
+
+最小验收：
+
+```text
+客户进群和退群后，后台能看到关系记录，统计能更新。
+```
+
+### 阶段 7：告警、失败重试、统计导出
+
+目标：
+
+```text
+1. 新增 alert_log。
+2. 新增 retry_task。
+3. 新增告警中心。
+4. 新增失败任务重试。
+5. 新增统计报表和导出。
+```
+
+最小验收：
+
+```text
+API 失败、群池无可用群、欢迎语失败、打标失败能产生告警。
+失败任务可自动重试和手动重试。
+统计数据可查询和导出。
+```
+
+---
+
+## 13. 一期验收标准
+
+一期完成后必须满足：
+
+```text
+1. 运营人员可以创建渠道活码，并将二维码投放到不同渠道。
+2. 客户扫码并添加企业微信员工后，系统能识别渠道。
+3. 系统能保存客户关系和客户来源。
+4. 系统能自动打渠道标签。
+5. 系统能按规则匹配群池。
+6. 系统能发送欢迎语和入群入口。
+7. 客户进群或退群后，系统能记录客户群关系。
+8. 系统能更新新增好友数、进群人数、退群人数、进群转化率。
+9. 群池满员时能切换备用群。
+10. 群池无可用群时能触发告警。
+11. 企业微信 API 调用成功和失败都有日志。
+12. 回调重复推送不会重复执行欢迎语、打标、关系写入。
+13. 失败任务可自动重试和手动重试。
+14. 后台可以查看基础统计、日志和告警，并支持导出。
+15. 不出现超出一期边界的功能承诺，例如强制入群、模拟员工私聊、群内 AI 自动回复。
+```
+
+---
+
+## 14. Codex 执行要求
+
+Codex 开发时必须遵守：
+
+```text
+1. 先阅读 Iyque-SCRM 当前代码结构，再写代码。
+2. 不要大规模重构已有模块。
+3. 不要删除 Iyque-SCRM 现有能力。
+4. 一期只改与闭环相关的模块。
+5. 新增能力优先放在 cn.iyque.scrm 包下。
+6. 已有员工活码、客户、标签、素材、客群接口优先复用。
+7. 所有新增企业微信 API 调用必须经过 WecomApiClient。
+8. 所有回调事件必须先做幂等。
+9. 所有失败动作必须记录日志，必要时写入 retry_task 和 alert_log。
+10. 不引入非官方协议、Hook、模拟点击、PC 自动化。
+11. 每完成一个 MVP 阶段都要运行对应测试或手动验收。
+12. 如果某个企业微信能力不确定，必须标注“需要查企业微信官方文档确认”。
+```
+
+---
+
+## 15. 当前结论
+
+新的实现路线是：
+
+```text
+MVP 阶段推荐：
+Iyque-SCRM + Spring Boot 2.7 + Java 17 + MySQL + Redis + Vue 3 + Element Plus + wxJava
+
+核心策略：
+复用 Iyque-SCRM 已有企业微信基础能力；
+新增一期闭环所需的群池、分群、进退群、幂等、API 日志、告警、重试、token 缓存治理。
+
+不推荐：
+一开始重写 FastAPI 版本；
+一开始重构 Iyque-SCRM 全部模块；
+一开始扩展 AI 客服、会话存档、H5 营销、风控等非一期能力。
+```
