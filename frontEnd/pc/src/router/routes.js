@@ -396,8 +396,8 @@ export const iyqueOriginalNavRoutes = [
   },
 ]
 
-// 一期项目默认只展示《02_运营后台功能规划》中的菜单，原 Iyque 菜单保留在 iyqueOriginalNavRoutes 中。
-export const navRoutes = phaseOneNavRoutes
+// 一期项目入口前置展示，原 Iyque 功能继续保留在后续菜单中。
+export const navRoutes = phaseOneNavRoutes.concat(iyqueOriginalNavRoutes)
 
 // 公共路由
 export const constantRoutes = navRoutes.concat([
@@ -420,6 +420,11 @@ export const constantRoutes = navRoutes.concat([
   {
     path: '/authRedirect',
     component: () => import('@/views/system/login/authRedirect'),
+    hidden: true,
+  },
+  {
+    path: '/false',
+    redirect: navRoutes[0].path,
     hidden: true,
   },
   {

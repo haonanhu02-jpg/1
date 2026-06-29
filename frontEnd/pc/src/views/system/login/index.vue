@@ -134,6 +134,11 @@ export default {
     this.findThreeLoginInfo()
   },
   methods: {
+    getLoginRedirect() {
+      return this.redirect && !['false', 'undefined', 'null'].includes(String(this.redirect))
+        ? this.redirect
+        : '/'
+    },
     findThreeLoginInfo() {
       findThreeLoginInfo().then(({ data }) => {
         this.threeLoginInfo.startThreeLogin = data.startThreeLogin
@@ -172,7 +177,7 @@ export default {
           login(loginForm)
             .then(({ data }) => {
               setToken(data.token)
-              this.$router.push(this.redirect || '/')
+              this.$router.push(this.getLoginRedirect())
             })
             .catch(() => {
               this.loading = false
